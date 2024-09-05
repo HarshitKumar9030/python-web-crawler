@@ -1,0 +1,7 @@
+websites:
+  - "https://example.org"
+output:
+  type: "csv"  # or "csv"
+  path: "data/output.csv"
+rate_limit:
+  requests_per_minute: 30
