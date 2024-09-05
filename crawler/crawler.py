@@ -4,6 +4,7 @@ from time import sleep
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from crawler.parser import parse_content
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from crawler.storage import save_data
 from crawler.utils import handle_error, apply_rate_limit
 from crawler.config_loader import load_config
@@ -11,7 +12,7 @@ from tqdm import tqdm
 
 
 class WebCrawler:
-    def __init__(self, websites, output_type, output_path, rate_limit):
+    def __init__(self, websites, output_type, output_path, rate_limit, max_workers=5):
         self.websites = websites
         self.output_type = output_type
         self.output_path = output_path
@@ -21,6 +22,7 @@ class WebCrawler:
         self.pages_to_crawl = []
         self.progress_bar = None
         self.lock = threading.Lock()
+        self.max_workers = max_workers
 
     def fetch_page(self, url):
         try:
@@ -35,8 +37,11 @@ class WebCrawler:
         self.progress_bar = tqdm(total=1, desc="Crawling pages", unit="page")
         threading.Thread(target=self.estimate_total_pages).start()
 
-        for website in self.websites:
-            self.recursive_crawl(website)
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_url = {executor.submit(self.recursive_crawl, website): website for website in self.websites}
+
+            for future in as_completed(future_to_url):
+                future.result() 
         
         self.progress_bar.close()
 
@@ -44,8 +49,10 @@ class WebCrawler:
         if url in self.visited_urls:
             return
 
-        self.visited_urls.add(url)
-        self.pages_to_crawl.append(url)
+        with self.lock:
+            self.visited_urls.add(url)
+            self.pages_to_crawl.append(url)
+
         content = self.fetch_page(url)
         
         if not content:
@@ -68,9 +75,11 @@ class WebCrawler:
             self.progress_bar.total = len(self.pages_to_crawl)
             self.progress_bar.update(1)
 
-        for new_url in new_links:
-            self.recursive_crawl(new_url)
-
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_url = {executor.submit(self.recursive_crawl, new_url): new_url for new_url in new_links}
+            for future in as_completed(future_to_url):
+                future.result()  
+        
         apply_rate_limit(self.rate_limit)
 
     def is_internal_link(self, url, base_url):
@@ -88,5 +97,5 @@ class WebCrawler:
 
 if __name__ == "__main__":
     config = load_config("config/config.yaml")
-    crawler = WebCrawler(config["websites"], config["output"]["type"], config["output"]["path"], config["rate_limit"])
+    crawler = WebCrawler(config["websites"], config["output"]["type"], config["output"]["path"], config["rate_limit"], max_workers=5)
     crawler.crawl()
